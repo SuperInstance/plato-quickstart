@@ -1,0 +1,10 @@
+[package]
+name = "plato-quickstart"
+version = "0.1.0"
+edition = "2021"
+description = "Bootstrap a Plato room in 30 seconds — sensor configs, alarm rules, and fleet manifests"
+license = "MIT"
+
+[[bin]]
+name = "plato"
+path = "src/main.rs"
