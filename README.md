@@ -1,92 +1,117 @@
 # Plato Quickstart
 
-**Plato Quickstart** is a CLI tool that bootstraps a Plato room in 30 seconds — generating sensor configurations, alarm rules, and fleet manifests for IoT monitoring and control scenarios.
+**Plato Quickstart** is a command-line toolkit for bootstrapping Plato rooms — sensor configuration, alarm rules, and fleet manifests — letting you go from zero to a running simulation in 30 seconds with `plato init`, `plato validate`, `plato simulate`, and `plato fleet`.
 
 ## Why It Matters
 
-Setting up an IoT monitoring room from scratch involves defining sensors (temperature, RPM, pressure), actuators (alarms, limiters), and alarm rules with correct thresholds, cooldown periods, and escalation actions. Doing this by hand is tedious and error-prone. Plato Quickstart automates the entire process: `plato init` generates a complete `room.json`, `plato validate` checks it, `plato simulate` runs a 100-tick simulation, and `plato fleet` generates deployment manifests.
+Configuring a monitoring room from scratch involves defining sensors (names, units, ranges, normal operating bands), actuators (boolean toggles, float limits), and alarm rules (conditions, severity, cooldown, actions). Doing this by hand is tedious and error-prone. Plato Quickstart generates a complete room.json configuration with realistic defaults (engine coolant temperature, RPM, oil pressure), validates it for required fields, runs a 100-tick simulation showing alarm firing and recovery, and generates a fleet.json manifest for multi-room deployment — all from four commands.
 
 ## How It Works
 
-### Room Configuration Model
-
-A Plato room is a JSON object:
+### Room Configuration (room.json)
 
 ```json
 {
   "room_id": "engine_room",
   "tick_hz": 1.0,
-  "sensors": [...],
-  "actuators": [...],
-  "alarms": [...]
+  "sensors": [
+    {"name": "coolant_temp_c", "unit": "°C", "min": 0, "max": 120, "normal_range": [75, 95]},
+    {"name": "rpm", "unit": "rpm", "min": 0, "max": 3000, "normal_range": [1200, 2200]},
+    {"name": "oil_pressure_psi", "unit": "psi", "min": 0, "max": 100, "normal_range": [25, 65]}
+  ],
+  "actuators": [
+    {"name": "alarm_bell", "type": "boolean", "default": false},
+    {"name": "rpm_limit", "type": "float", "default": 2200, "range": [800, 2200]}
+  ],
+  "alarms": [
+    {"name": "engine_overheat", "condition": "coolant_temp_c > 95", "severity": "critical",
+     "cooldown_ticks": 30, "actions": ["alarm_bell = true", "rpm_limit = 1500"]}
+  ]
 }
 ```
 
-- **Sensors**: Named values with units, min/max range, and normal operating range
-- **Actuators**: Boolean or float outputs with defaults and range constraints
-- **Alarms**: Condition expressions (e.g., `coolant_temp_c > 95`) with severity, cooldown ticks, and actions
+Parsing: **O(N)** where N = JSON character count. Validation checks 4 required fields.
 
-### Alarm Rule Evaluation
+### Simulation Model
 
-Each tick, the room evaluates all alarm conditions:
+The simulate command runs a fixed 12-point time series representing 100 ticks at 1Hz:
 
 ```
-for alarm in room.alarms:
-    if eval(alarm.condition, sensor_values):
-        if alarm.cooldown_expired():
-            for action in alarm.actions:
-                execute(action, actuators)
-            alarm.reset_cooldown()
+Tick  Coolant   RPM    Oil PSI   Status
+  1    82.1°C  1801    45.2     normal
+ 30    91.5°C  1820    43.5     rising ↑
+ 40    95.8°C  1835    42.8     🔴 OVERHEAT
+ 41    95.3°C  1838    42.7     ⚡ alarm_bell=ON, rpm_limit=1500
+ 70    84.2°C  1500    44.8     recovered
+100    82.1°C  1799    45.2     normal
 ```
 
-Condition evaluation: **O(1)** per alarm (simple comparison). Cooldown tracking prevents alarm flapping — once triggered, the alarm won't re-fire for `cooldown_ticks` ticks.
+Alarm lifecycle: normal → rising → threshold breach → alarm+action → cooldown → recovery → normal. Total cycle: 100 ticks. Simulation output: **O(T)** where T = number of sampled ticks.
 
-### Simulation
+### Alarm Evaluation
 
-The `simulate` command runs 100 ticks with sensor values sampled from normal distributions within configured ranges, evaluating alarms and logging actions. This validates that alarm thresholds trigger correctly under realistic conditions.
+```
+for each alarm rule:
+    if evaluate(condition, sensor_values):
+        if not in cooldown_period:
+            fire alarm
+            execute actions (set actuator values)
+            enter cooldown
+    else:
+        if in cooldown and cooldown_expired:
+            clear alarm
+```
 
-### Validation
+Per-tick alarm evaluation: **O(A × C)** where A = number of alarm rules, C = condition complexity (typically O(1) per comparison).
 
-The `validate` command checks:
-- JSON syntax validity
-- Sensor ranges: `min < normal_range[0] ≤ normal_range[1] < max`
-- Alarm conditions reference defined sensors
-- Action targets reference defined actuators
+### Fleet Manifest
 
-Validation: **O(N + M)** where N = sensors, M = alarms.
+```json
+{
+  "fleet_id": "fishing-boat-ermentrude",
+  "rooms": [
+    {"room_id": "engine_room", "host": "192.168.1.10", "port": 7070, "tick_hz": 1.0},
+    {"room_id": "wheelhouse", "host": "192.168.1.12", "port": 7070, "tick_hz": 1.0}
+  ]
+}
+```
+
+Fleets support polyrhythmic tick rates: engine_room at 1Hz, galley at 0.017Hz (once per minute), backdeck at 2Hz. Manifest generation: **O(R)** for R rooms.
 
 ## Quick Start
 
 ```bash
+# Create a new room
 mkdir my-room && cd my-room
-plato init          # creates room.json with 3 sensors, 2 actuators, 2 alarms
-plato validate .    # checks config validity
+plato init          # creates room.json with defaults
+plato validate .    # checks required fields
 plato simulate      # runs 100-tick simulation
 plato fleet         # generates fleet.json manifest
+plato version       # prints version
 ```
 
 ## API
 
 | Command | Description |
 |---------|-------------|
-| `plato init` | Create room.json with default engine monitoring config |
-| `plato validate [file]` | Validate a room config file |
-| `plato simulate` | Run 100-tick simulation with alarm evaluation |
-| `plato fleet` | Generate fleet.json deployment manifest |
+| `plato init` | Create room.json with sensor/actuator/alarm defaults |
+| `plato validate [FILE]` | Check room config for required fields (room_id, tick_hz, sensors, alarms) |
+| `plato simulate` | Run 100-tick simulation with alarm firing/recovery |
+| `plato fleet` | Generate fleet.json with multi-room manifest |
 | `plato version` | Print version |
 | `plato help` | Print usage |
 
 ## Architecture Notes
 
-Plato Quickstart is the bootstrap tool for the Plato room runtime in the SuperInstance fleet system. In γ + η = C, rooms are the unit of γ (growth — each room monitors and controls a physical or logical space) while alarm rules implement η (avoidance — detecting and responding to dangerous conditions). Room configs integrate with `ternary-cell` for state tracking and `openmind-esp32-bridge` for hardware I/O.
+Plato Quickstart provides the room bootstrapping layer for fleet deployment in SuperInstance. In γ + η = C, sensor values represent γ (growth — operational telemetry indicating fleet activity), alarm conditions trigger η (avoidance — corrective actions preventing damage), and the cooldown period implements C (conservation — preventing alarm spam by requiring recovery time between firings). Integrates with `openmind-conductor` for AI-driven alarm response and `node-agent` for sensor data collection.
 
 See [ARCHITECTURE.md](https://github.com/SuperInstance/SuperInstance/blob/main/ARCHITECTURE.md) for fleet room architecture.
 
 ## References
 
-1. Appleton, D. (2017). "Threshold-Based Alerting in Monitoring Systems." *O'Reilly Media*.
-2. Nagios Enterprises (2024). "Configuration Best Practices for Alert-based Monitoring."
-3. Prometheus Authors (2024). "Recording Rules and Alerting Rules." *Prometheus Documentation*.
+1. Nagios Enterprises (2024). *Nagios Core Administration Guide*. Configuration and alarm rules.
+2. Prometheus Authors (2024). *Prometheus Alerting Rules Documentation*. Alert condition evaluation.
+3. Bernstein, D. (2014). "Containers and Cloud: From LXC to Docker to Kubernetes." *IEEE Cloud Computing*.
 
 ## License
 
